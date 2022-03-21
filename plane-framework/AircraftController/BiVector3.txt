@@ -1,0 +1,26 @@
+local BiVector3 = {}
+BiVector3.__index = BiVector3
+
+function BiVector3.new(force, torque)
+	local self = setmetatable({
+		p = force or Vector3.new(0, 0, 0),
+		q = torque or Vector3.new(0, 0, 0),
+		
+	}, BiVector3)
+	
+	return self
+end
+
+BiVector3.__add = function(t, k)
+	return BiVector3.new((t.p + k.p), (t.q + k.q))
+end
+
+BiVector3.__mul = function(t, k)
+	if type(k) == "table" then
+		return BiVector3.new((t * k.p), (t * k.p))
+	end
+
+	return k * t
+end
+
+return BiVector3

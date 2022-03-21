@@ -1,0 +1,93 @@
+local Aircraft = require(script.AircraftPhysics)
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local PITCH_CONTROL_SENSITIVITY = 0.2
+local ROLL_CONTROL_SENSITIVITY = 0.2
+local YAW_CONTROL_SENSITIVITY = 0.2
+
+local player = game.Players.LocalPlayer
+local plane = workspace:WaitForChild("Plane")
+local mouse = player:GetMouse()
+local gui = player.PlayerGui:WaitForChild("Systems")
+
+local testPlane = Aircraft.new(plane, plane.AerodynamicSurfaces:GetChildren(), false)
+
+local pitch, yaw, roll, flap = 0, 0, 0, 0
+local thrustPercent = 0
+local visualFlapAngle = 0
+local flapGui = gui.Frame.Flaps.RightAlignedContent.TextLabel
+local throttleGui = gui.OnScreen.Throttle
+local changeThrottle = false
+
+local function SetControlSurfaceAngles(pitch, roll, yaw, flap)
+	for _,surface in pairs(testPlane._aerodynamicSurfaces) do
+		
+		if surface._controlInputType == "Pitch" then
+			surface:SetFlapAngle(pitch * PITCH_CONTROL_SENSITIVITY * surface._inputMultiplier)
+			
+		elseif surface._controlInputType == "Roll" then
+			surface:SetFlapAngle(roll * ROLL_CONTROL_SENSITIVITY * surface._inputMultiplier)
+			
+		elseif surface._controlInputType == "Yaw" then
+			surface:SetFlapAngle(yaw * YAW_CONTROL_SENSITIVITY * surface._inputMultiplier)
+			
+		elseif surface._controlInputType == "Flap" then
+			surface:SetFlapAngle(flap * surface._inputMultiplier)
+		end
+
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+	if input.KeyCode == Enum.KeyCode.F then
+		if flap < math.rad(6) then
+			flap += math.rad(2)
+			visualFlapAngle += 15
+		else
+			flap = 0
+			visualFlapAngle = 0
+		end
+		
+		flapGui.Text = tostring(visualFlapAngle)
+		
+	elseif input.KeyCode == Enum.KeyCode.W then
+		changeThrottle = true
+		while changeThrottle do wait()
+			thrustPercent += 0.01
+			
+			throttleGui.RightAlignedContent.TextLabel.Text = math.clamp(thrustPercent, 0, 1) * 100
+			
+			throttleGui.Parent.Percentage.Size = UDim2.new(math.clamp(thrustPercent, 0, 1), 0, 1, 0)
+		end
+		
+	elseif input.KeyCode == Enum.KeyCode.S then
+		changeThrottle = true
+		while changeThrottle do wait()
+			thrustPercent -= 0.01
+			
+			throttleGui.RightAlignedContent.TextLabel.Text = math.clamp(thrustPercent, 0, 1) * 100
+			
+			throttleGui.Parent.Percentage.Size = UDim2.new(math.clamp(thrustPercent, 0, 1), 0, 1, 0)
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input, gpe)
+	if input.KeyCode == Enum.KeyCode.W or input.KeyCode == Enum.KeyCode.S then
+		changeThrottle = false
+	end
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+	local x = math.clamp(-mouse.Hit.LookVector.X, -1, 1)
+	local y = math.clamp(mouse.Hit.LookVector.Y, -1, 1)
+	
+	roll = x
+	pitch = y
+	
+	SetControlSurfaceAngles(pitch, roll, yaw, flap)
+	
+	testPlane:SetThrustPercent(thrustPercent)
+end)
+

@@ -1,0 +1,28 @@
+local Debug = {}
+
+local Aircraft = require(script.Parent.AircraftPhysics)
+
+local RunService = game:GetService("RunService")
+
+local player = game.Players.LocalPlayer
+local gui = player.PlayerGui:WaitForChild("ScreenGui")
+
+gui.Enabled = true
+
+local debugValues = {}
+
+for _,v in pairs(gui.Frame:GetChildren()) do
+	if v:IsA("Frame") and v.Name ~= "Divider" and v.Name ~= "Title" then
+		table.insert(debugValues, v)
+	end
+end
+
+RunService.RenderStepped:Connect(function(dt)
+	local state = testPlane:CurrentState()
+
+	for _,value in pairs(debugValues) do
+		value.RightAlignedContent.TextLabel.Text = tostring(state[value.Name])
+	end	
+end)
+
+return Debug

@@ -1,0 +1,12 @@
+return {
+	liftSlope = 6.28,
+	skinFriction = 0.02,
+	zeroLiftAoA = 0,
+	stallAngleHigh = 15,
+	stallAngleLow = -15,
+	chord = 1,
+	flapFraction = 0,
+	span = 1,
+	autoAspectRatio = true,
+	aspectRatio = 2
+}

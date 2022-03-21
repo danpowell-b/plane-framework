@@ -1,0 +1,135 @@
+local BiVector3 = require(script.Parent.BiVector3)
+local AeroSurface = require(script.Parent.AeroSurface)
+local Config = require(script.Parent.Config)
+
+local RunService = game:GetService("RunService")
+
+local PREDICTION_TIMESTEP_FRACTION = 0.5
+
+local AircraftPhysics = {}
+AircraftPhysics.__index = AircraftPhysics
+
+function AircraftPhysics.new(assembly, aerodynamicSurfaces, debug)
+	local self = setmetatable({
+		_aerodynamicSurfaces = {},
+		_thrustPercent = 0,
+		_thrust = 0,
+		_currentForceAndTorque = BiVector3.new(),
+		_assembly = assembly,
+		
+	}, AircraftPhysics)
+	
+	if debug then
+		self:Debug()
+	end
+	
+	for _,surface in pairs(aerodynamicSurfaces) do
+		table.insert(self._aerodynamicSurfaces, AeroSurface.new(surface))
+	end
+	
+	RunService.Stepped:Connect(function(time, dt)
+		--local centerOfMassCFrame = CFrame.new(self._assembly.AssemblyCenterOfMass)
+
+		local forceAndTorqueThisFrame = self:CalculateAerodynamicForces(
+			self._assembly.AssemblyLinearVelocity, 
+			self._assembly.AssemblyAngularVelocity,
+			Vector3.new(0, 0, 0),
+			1.2,
+			self._assembly.AssemblyCenterOfMass
+		)
+
+		local forward = self._assembly.AssemblyRootPart.CFrame:VectorToObjectSpace(Vector3.new(0, 0, 1))
+		local mg = workspace.Gravity * self._assembly.AssemblyMass
+
+		--local velocityPrediction = self:PredictVelocity(dt, forceAndTorqueThisFrame.p + forward * self._thrust * self._thrustPercent + mg)
+
+		--local angularVelocityPrediction = self:PredictAngularVelocity(dt, forceAndTorqueThisFrame.q)
+
+		--local forceAndTorquePrediction = self:CalculateAerodynamicForces(
+		--	velocityPrediction,
+		--	angularVelocityPrediction,
+		--	Vector3.new(0, 0, 0),
+		--	1.2,
+		--	self._assembly.AssemblyCenterOfMass
+		--)
+		
+		--[[
+			No prediction calculated
+			
+			self._currentForceAndTorque = (forceAndTorqueThisFrame + forceAndTorquePrediction) * 0.5
+		]]
+		self._currentForceAndTorque = forceAndTorqueThisFrame
+
+		self._assembly.Force.Force = self._currentForceAndTorque.p * 100
+		self._assembly.Torque.Torque = Vector3.new(0, 0, 0)
+		
+		self._assembly.Thrust.Force = Vector3.new(0, 0, 0)
+	end)
+	
+	return self
+end
+
+function AircraftPhysics:SetThrustPercent(percent)
+	self._thrustPercent = percent
+end
+
+function AircraftPhysics:CalculateAerodynamicForces(velocity, angularVelocity, wind, airDensity, centerOfMass)
+	local forceAndTorque = BiVector3.new()
+	
+	for _,surface in pairs(self._aerodynamicSurfaces) do
+		local relativePosition = surface._surface.Position - centerOfMass
+
+		forceAndTorque += surface:CalculateForces(-velocity + wind - angularVelocity:Cross(relativePosition), airDensity, relativePosition)
+	end
+
+	return forceAndTorque
+end
+
+--function AircraftPhysics:PredictVelocity(dt, force)
+--	return self._assembly.AssemblyLinearVelocity + dt * PREDICTION_TIMESTEP_FRACTION * force / self._assembly.AssemblyMass 
+--end
+
+--function AircraftPhysics:PredictAngularVelocity(dt, torque)
+--	-- TODO: Tensor calculations
+--end
+
+function AircraftPhysics:CurrentState()
+	return {
+		["Linear Velocity"] = self._assembly.AssemblyLinearVelocity,
+		["Angular Velocity"] = self._assembly.AssemblyAngularVelocity,
+		["Aerodynamic Surfaces"] = #(self._aerodynamicSurfaces),
+		["Thrust Percent"] = self._thrustPercent,
+		["Thrust"] = self._thrust,
+		["Force"] = self._currentForceAndTorque.p,
+		["Torque"] = self._currentForceAndTorque.q,
+		["Air Density"] = 1.2,
+		["Predicted Angular Velocity"] = "n/a",
+		["Predicted Linear Velocity"] = "n/a",
+		["Mass"] = self._assembly.AssemblyMass
+	}
+end
+
+function AircraftPhysics:Debug()
+	local player = game.Players.LocalPlayer
+	local gui = player.PlayerGui:WaitForChild("ScreenGui")
+
+	gui.Enabled = true
+
+	local debugValues = {}
+
+	for _,v in pairs(gui.Frame:GetChildren()) do
+		if v:IsA("Frame") and v.Name ~= "Divider" and v.Name ~= "Title" then
+			table.insert(debugValues, v)
+		end
+	end
+
+	RunService.RenderStepped:Connect(function(dt)
+		local state = self:CurrentState()
+
+		for _,value in pairs(debugValues) do
+			value.RightAlignedContent.TextLabel.Text = tostring(state[value.Name])
+		end	
+	end)
+end
+
+return AircraftPhysics

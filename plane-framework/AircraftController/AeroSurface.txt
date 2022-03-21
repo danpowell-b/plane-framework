@@ -1,0 +1,238 @@
+--[[
+	Component for surfaces which are effected by aerodynamics
+	
+	AeroSurface can be a wing, or a part of a wing, or a part of a tail etc.
+]]
+
+local Config = require(script.Parent.Config)
+local BiVector3 = require(script.Parent.BiVector3)
+local RunService = game:GetService("RunService")
+
+local forward = Vector3.new(0, 0, 1)
+
+local function Lerp(a, b, p)
+	return (a + (b - a) * p)
+end
+
+local function TorqCoefficientProportion(effectiveAngle)
+	return 0.25 - 0.175 * (1 - 2 * math.abs(effectiveAngle) / math.pi)
+end
+
+local function LiftCoefficientMaxFraction(flapFraction)
+	return math.clamp(1 - 0.5 * (flapFraction - 0.1) / 0.3, 0, 1)
+end
+
+local function FlapEffectivnessCorrection(flapAngle)
+	return Lerp(0.8, 0.4, (math.deg(math.abs(flapAngle)) - 10) / 50)
+end
+
+local function FrictionAt90Degrees(flapAngle)
+	return 1.98 - (4.26 * 10^-2) * flapAngle * flapAngle + (2.1 * 10^-1) * flapAngle
+end
+
+local AeroSurface = {}
+AeroSurface.__index = AeroSurface
+
+function AeroSurface.new(surface)
+	local self = setmetatable({
+		_surface = surface,
+		_flapAngle = 0,
+		_controlInputType = surface.ControlInputType.Value,
+		_inputMultiplier = 1
+		
+	}, AeroSurface)
+	
+	return self
+end
+
+function AeroSurface:SetFlapAngle(angle)
+	self._flapAngle = math.clamp(angle, -math.rad(50), math.rad(50))
+	
+	for _,v in pairs(self._surface:GetChildren()) do
+		if v.Name == "Ref" then
+			if self._controlInputType == "Roll" then
+				v.Value.TargetAngle = math.deg(self._flapAngle) * 1.5
+			else
+				v.Value.TargetAngle = math.deg(self._flapAngle) * 6
+			end
+		end
+	end
+end
+
+function AeroSurface:CalculateForces(worldAirVelocity, airDensity, relativePosition)
+	local forceAndTorque = BiVector3.new()
+	
+	--[[
+		Accounting for aspect ratio effect on lift coefficient
+	]]
+	local correctedLiftSlope = Config.liftSlope * Config.aspectRatio / (Config.aspectRatio + 2 * (Config.aspectRatio + 4) / (Config.aspectRatio + 2))
+	
+	--[[
+		Calculating flap deflection influence on zero lift angle
+		of attack, and angles at which stall happens
+	]]
+	local theta = math.acos(2 * Config.flapFraction - 1)
+	local flapEffectiveness = 1 - (theta - math.sin(theta)) / math.pi
+	
+	local deltaLift = correctedLiftSlope * flapEffectiveness * FlapEffectivnessCorrection(self._flapAngle) * self._flapAngle
+	
+	local zeroLiftAoABase = math.rad(Config.zeroLiftAoA)
+	local zeroLiftAoA = math.rad(Config.stallAngleLow)
+	
+	local stallAngleHighBase = math.rad(Config.stallAngleHigh)
+	local stallAngleLowBase = math.rad(Config.stallAngleLow)
+	
+	local lcmf = LiftCoefficientMaxFraction(Config.flapFraction)
+
+	local clMaxHigh = correctedLiftSlope * (stallAngleHighBase - zeroLiftAoABase) + deltaLift * lcmf
+	local clMaxLow = correctedLiftSlope * (stallAngleLowBase - zeroLiftAoABase) + deltaLift * lcmf
+	
+	local stallAngleHigh = zeroLiftAoA + clMaxHigh / correctedLiftSlope
+	local stallAngleLow = zeroLiftAoA + clMaxLow / correctedLiftSlope
+	
+	--[[
+		Calculating air velocity relative to the surface's coordinate
+		system
+
+		Z component of the velocity is discarded
+	]]
+	local airVelocity = self._surface.CFrame:VectorToObjectSpace(worldAirVelocity)
+	
+	airVelocity = Vector3.new(airVelocity.X, airVelocity.Y, 0)
+	
+	local dragDirection = self._surface.CFrame:VectorToWorldSpace(airVelocity) -- airVelocity.Unit
+	
+	local liftDirection = dragDirection:Cross(self._surface.CFrame:VectorToObjectSpace(forward))
+	
+	local area = Config.chord * Config.span
+	local dynamicPressure = 0.5 * airDensity * math.sqrt(airVelocity.Magnitude)
+	local angleOfAttack = math.atan(airVelocity.Y, -(airVelocity.X))
+	
+	local aerodynamicCoefficients = self:CalculateCoefficients(
+		angleOfAttack,
+		correctedLiftSlope,
+		zeroLiftAoA,
+		stallAngleHigh,
+		stallAngleLow
+	)
+	
+	local lift = liftDirection * aerodynamicCoefficients.X * dynamicPressure * area
+	
+	local drag = dragDirection * aerodynamicCoefficients.Y * dynamicPressure * area
+	
+	local torque = -self._surface.CFrame:VectorToObjectSpace(forward) * aerodynamicCoefficients.Z * dynamicPressure * area * Config.chord
+	
+	forceAndTorque.p += lift + drag
+	forceAndTorque.q += relativePosition:Cross(forceAndTorque.p)
+	forceAndTorque.q += torque
+	
+	return forceAndTorque
+end
+
+function AeroSurface:CalculateCoefficients(angleOfAttack, correctedLiftSlope, zeroLiftAoA, stallAngleHigh, stallAngleLow)
+	local aerodynamicCoefficients = Vector3.new()
+	
+	--[[
+		Low angle of attack mode and stall mode curves are 
+		stiched together by a line segment
+	]]
+	local paddingAngleHigh = math.rad(Lerp(15, 5, (math.rad(self._flapAngle + 50) / 100)))
+	
+	local paddingAngleLow = math.rad(Lerp(15, 5, (-math.rad(self._flapAngle + 50) / 100)))
+	
+	local paddedStallAngleHigh = stallAngleHigh + paddingAngleHigh
+	local paddedStallAngleLow = stallAngleLow - paddingAngleLow
+	
+	if (angleOfAttack < stallAngleHigh) and (angleOfAttack > stallAngleLow) then
+		--[[
+			Low angle of attack mode
+		]]
+		aerodynamicCoefficients = self:CalculateCoefficientsAtLowAoA(angleOfAttack, correctedLiftSlope, zeroLiftAoA)
+	else
+		if (angleOfAttack > paddedStallAngleHigh) or (angleOfAttack < paddedStallAngleLow) then
+			--[[
+				Stall mode
+			]]
+			aerodynamicCoefficients = self:CalculateCoefficientsAtStall(
+				angleOfAttack, 
+				correctedLiftSlope,
+				zeroLiftAoA,
+				stallAngleHigh,
+				stallAngleLow
+			)
+		else
+			--[[
+				Linear stitching in-between stall and low angles of attack modes
+			]]
+			local aerodynamicCoefficientsLow = nil
+			local aerodynamicCoefficientsStall = nil
+			local lerpParam = nil
+			
+			if angleOfAttack > stallAngleHigh then
+				aerodynamicCoefficientsLow = self:CalculateCoefficientsAtLowAoA(stallAngleHigh, correctedLiftSlope, zeroLiftAoA)
+				aerodynamicCoefficientsStall = self:CalculateCoefficientsAtStall(paddedStallAngleHigh, correctedLiftSlope, zeroLiftAoA, stallAngleHigh, stallAngleLow)
+		
+				lerpParam = (angleOfAttack - stallAngleHigh) / (paddedStallAngleHigh - stallAngleHigh)
+			else
+				aerodynamicCoefficientsLow = self:CalculateCoefficientsAtLowAoA(stallAngleLow, correctedLiftSlope, zeroLiftAoA)
+				aerodynamicCoefficientsStall = self:CalculateCoefficientsAtStall(paddedStallAngleLow, correctedLiftSlope, zeroLiftAoA, stallAngleHigh, stallAngleLow)
+				
+				lerpParam = (angleOfAttack - stallAngleLow) / (paddedStallAngleLow - stallAngleLow)
+			end
+			
+			aerodynamicCoefficients = aerodynamicCoefficientsLow:Lerp(aerodynamicCoefficientsStall, lerpParam)
+		end
+	end
+	
+	return aerodynamicCoefficients
+end
+
+function AeroSurface:CalculateCoefficientsAtStall(angleOfAttack, correctedLiftSlope, zeroLiftAoA, stallAngleHigh, stallAngleLow)
+	local liftCoefficientLowAoA = nil
+
+	if angleOfAttack > stallAngleHigh then
+		liftCoefficientLowAoA = correctedLiftSlope * (stallAngleHigh - zeroLiftAoA)
+	else
+		liftCoefficientLowAoA = correctedLiftSlope * (stallAngleLow - zeroLiftAoA)
+	end
+
+	local inducedAngle = liftCoefficientLowAoA / (math.pi * Config.aspectRatio)
+	local lerpParam = nil
+
+	if angleOfAttack > stallAngleHigh then
+		lerpParam = (math.pi / 2 - math.clamp(angleOfAttack, -math.pi / 2, math.pi / 2)) / (math.pi / 2 - stallAngleHigh)
+	else
+		lerpParam = (-math.pi / 2 - math.clamp(angleOfAttack, -math.pi / 2, math.pi / 2)) / (-math.pi / 2 - stallAngleLow)
+	end
+
+	inducedAngle = Lerp(0, inducedAngle, lerpParam)
+	local effectiveAngle = angleOfAttack - zeroLiftAoA - inducedAngle
+	
+	local a = (1 / 0.56 + 0.44 * math.abs(math.sin(effectiveAngle)))
+	local b = 0.41 * (1 - math.exp(-17 / Config.aspectRatio))
+
+	local normalCoefficient = FrictionAt90Degrees(self._flapAngle) * math.sin(effectiveAngle) * a - b
+	local tangentialCoefficient = 0.5 * Config.skinFriction * math.cos(effectiveAngle)
+	
+	local liftCoefficient = normalCoefficient * math.cos(effectiveAngle) - tangentialCoefficient * math.sin(effectiveAngle)
+	local dragCoefficient = normalCoefficient * math.sin(effectiveAngle) + tangentialCoefficient * math.cos(effectiveAngle)
+	local torqueCoefficient = -normalCoefficient * TorqCoefficientProportion(effectiveAngle)
+	
+	return Vector3.new(liftCoefficient, dragCoefficient, torqueCoefficient)
+end
+
+function AeroSurface:CalculateCoefficientsAtLowAoA(angleOfAttack, correctedLiftSlope, zeroLiftAoA)
+	local liftCoefficient = correctedLiftSlope * (angleOfAttack - zeroLiftAoA)
+	local inducedAngle = liftCoefficient / (math.pi * Config.aspectRatio)
+	local effectiveAngle = angleOfAttack - zeroLiftAoA - inducedAngle
+
+	local tangentialCoefficient = Config.skinFriction * math.cos(effectiveAngle)
+	local normalCoefficient = (liftCoefficient +  math.sin(effectiveAngle) * tangentialCoefficient / math.cos(effectiveAngle))
+
+	local dragCoefficient = normalCoefficient * math.sin(effectiveAngle) + tangentialCoefficient * math.cos(effectiveAngle)
+	local torqueCoefficient = -normalCoefficient * TorqCoefficientProportion(effectiveAngle)
+
+	return Vector3.new(liftCoefficient, dragCoefficient, torqueCoefficient)
+end
+
+return AeroSurface
